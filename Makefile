@@ -21,10 +21,9 @@ else
 	FLAPJACKFEEDER_VERSION := $(VERSION)
 endif
 
-FF3 = flapjackfeeder3-$(FLAPJACKFEEDER_VERSION).o
 FF4 = flapjackfeeder4-$(FLAPJACKFEEDER_VERSION).o
 
-all: $(FF3) $(FF4)
+all: $(FF4)
 
 # dep
 $(DEP):
@@ -34,14 +33,10 @@ $(DEP):
 	$(MAKE) -C $(HIREDIS) static
 
 # modules:
-$(FF3): $(SRC) $(DEP)
-	$(CC) $(REAL_CFLAGS) -o $@ $< -shared $(DEP) /usr/local/lib/libriemann-client.a
-	strip $@
-	ln -sf $@ flapjackfeeder3-latest.o
 $(FF4): $(SRC) $(DEP)
 	$(CC) $(REAL_CFLAGS) -DHAVE_NAEMON_H -o $@ $< -shared $(DEP) /usr/local/lib/libriemann-client.a /usr/local/lib/libprotobuf-c.a
 	strip $@
-	ln -sf $@ flapjackfeeder4-latest.o
+	ln -sf $@ riemannfeeder-latest.o
 
 clean:
 	rm -rf *.o $(HIREDIS)
