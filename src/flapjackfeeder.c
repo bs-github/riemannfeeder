@@ -31,7 +31,7 @@
 /* specify event broker API version (required) */
 NEB_API_VERSION(CURRENT_NEB_API_VERSION);
 
-void *npcdmod_module_handle = NULL;
+void *riemannfeeder_module_handle = NULL;
 char *riemann_connect_retry_interval = "15";
 struct timeval timeout = { 1, 500000 }; // 1.5 seconds
 
@@ -50,10 +50,10 @@ riemanntarget *riemanntargets = NULL;
 riemann_message_t *r;
 
 void riemann_re_connect();
-int npcdmod_handle_data(int, void *);
+int riemannfeeder_handle_data(int, void *);
 
-int npcdmod_process_config_var(char *arg);
-int npcdmod_process_module_args(char *args);
+int riemannfeeder_process_config_var(char *arg);
+int riemannfeeder_process_module_args(char *args);
 
 char servicestate[][10] = { "OK", "WARNING", "CRITICAL", "UNKNOWN", };
 char hoststate[][12] = { "OK", "CRITICAL", "CRITICAL", };
@@ -63,22 +63,22 @@ int nebmodule_init(int flags, char *args, nebmodule *handle) {
     char temp_buffer[1024];
 
     /* save our handle */
-    npcdmod_module_handle = handle;
+    riemannfeeder_module_handle = handle;
 
     /* set some info - this is completely optional, as Nagios doesn't do anything with this data */
-    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_TITLE, "riemannfeeder");
-    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_AUTHOR, "Birger Schmidt");
-    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_COPYRIGHT, "Copyright (c) 2016 Birger Schmidt");
-    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_VERSION, VERSION);
-    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_LICENSE, "GPL v2");
-    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_DESC, "A simple check result extractor / riemann writer.");
+    neb_set_module_info(riemannfeeder_module_handle, NEBMODULE_MODINFO_TITLE, "riemannfeeder");
+    neb_set_module_info(riemannfeeder_module_handle, NEBMODULE_MODINFO_AUTHOR, "Birger Schmidt");
+    neb_set_module_info(riemannfeeder_module_handle, NEBMODULE_MODINFO_COPYRIGHT, "Copyright (c) 2016 Birger Schmidt");
+    neb_set_module_info(riemannfeeder_module_handle, NEBMODULE_MODINFO_VERSION, VERSION);
+    neb_set_module_info(riemannfeeder_module_handle, NEBMODULE_MODINFO_LICENSE, "GPL v2");
+    neb_set_module_info(riemannfeeder_module_handle, NEBMODULE_MODINFO_DESC, "A simple check result extractor / riemann writer.");
 
     /* log module info to the Nagios log file */
     nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: Copyright (c) 2016 Birger Schmidt");
     nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: This is version '" VERSION "' running.");
 
     /* process arguments */
-    if (npcdmod_process_module_args(args) == ERROR) {
+    if (riemannfeeder_process_module_args(args) == ERROR) {
         nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: An error occurred while attempting to process module arguments.");
         return -1;
     }
@@ -89,9 +89,9 @@ int nebmodule_init(int flags, char *args, nebmodule *handle) {
 
     /* register to be notified of certain events... */
     neb_register_callback(NEBCALLBACK_HOST_CHECK_DATA,
-            npcdmod_module_handle, 0, npcdmod_handle_data);
+            riemannfeeder_module_handle, 0, riemannfeeder_handle_data);
     neb_register_callback(NEBCALLBACK_SERVICE_CHECK_DATA,
-            npcdmod_module_handle, 0, npcdmod_handle_data);
+            riemannfeeder_module_handle, 0, riemannfeeder_handle_data);
     return 0;
 }
 
@@ -100,8 +100,8 @@ int nebmodule_deinit(int flags, int reason) {
     char temp_buffer[1024];
 
     /* deregister for all events we previously registered for... */
-    neb_deregister_callback(NEBCALLBACK_HOST_CHECK_DATA,npcdmod_handle_data);
-    neb_deregister_callback(NEBCALLBACK_SERVICE_CHECK_DATA,npcdmod_handle_data);
+    neb_deregister_callback(NEBCALLBACK_HOST_CHECK_DATA,riemannfeeder_handle_data);
+    neb_deregister_callback(NEBCALLBACK_SERVICE_CHECK_DATA,riemannfeeder_handle_data);
 
     /* log a message to the Nagios log file */
     nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: Deinitializing riemannfeeder nagios event broker module.\n");
@@ -160,7 +160,7 @@ void riemann_re_connect() {
 }
 
 /* handle data from Nagios daemon */
-int npcdmod_handle_data(int event_type, void *data) {
+int riemannfeeder_handle_data(int event_type, void *data) {
     nebstruct_host_check_data *hostchkdata = NULL;
     nebstruct_service_check_data *srvchkdata = NULL;
 
@@ -264,7 +264,7 @@ int npcdmod_handle_data(int event_type, void *data) {
 /****************************************************************************/
 
 /* process arguments that were passed to the module at startup */
-int npcdmod_process_module_args(char *args) {
+int riemannfeeder_process_module_args(char *args) {
     char *ptr = NULL;
     char **arglist = NULL;
     char **newarglist = NULL;
@@ -318,7 +318,7 @@ int npcdmod_process_module_args(char *args) {
 
     /* process each argument */
     for (arg = 0; arg < argcount; arg++) {
-        if (npcdmod_process_config_var(arglist[arg]) == ERROR) {
+        if (riemannfeeder_process_config_var(arglist[arg]) == ERROR) {
             for (arg = 0; arg < argcount; arg++)
                 nm_free(arglist[arg]);
             nm_free(arglist);
@@ -341,7 +341,7 @@ int npcdmod_process_module_args(char *args) {
 }
 
 /* process a single module config variable */
-int npcdmod_process_config_var(char *arg) {
+int riemannfeeder_process_config_var(char *arg) {
     char temp_buffer[1024];
     char *var = NULL;
     char *val = NULL;
