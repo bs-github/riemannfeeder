@@ -1,10 +1,7 @@
 /*****************************************************************************
  *
- * FLAPJACKFEEDER.C
- * Copyright (c) 2013-2015 Birger Schmidt (http://flapjack.io)
- *
- * Derived from NPCDMOD.C ...
- * Copyright (c) 2008-2010 PNP4Nagios Project (http://www.pnp4nagios.org)
+ * RIEMANNFEEDER.C
+ * Copyright (c) 2016 Birger Schmidt
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -21,33 +18,8 @@
  *
  *****************************************************************************/
 
-#ifdef HAVE_NAEMON_H
-/* we compile for the naemon core ( -DHAVE_NAEMON_H was given as compile option ) */
 #include "naemon.h"
 #include "string.h"
-#else
-/* we compile for the legacy nagios 3 / icinga 1 core */
-
-/* include (minimum required) event broker header files */
-#include "../include/nebmodules.h"
-#include "../include/nebcallbacks.h"
-
-/* include other event broker header files that we need for our work */
-#include "../include/nebstructs.h"
-#include "../include/broker.h"
-
-/* include some Nagios stuff as well */
-#include "../include/config.h"
-#include "../include/common.h"
-#include "../include/nagios.h"
-#endif
-
-/* include some pnp stuff */
-#include "../include/pnp.h"
-#include "../include/npcdmod.h"
-
-/* include redis stuff */
-#include "../hiredis/hiredis.h"
 
 #ifndef VERSION
 #define VERSION "unknown"
@@ -60,28 +32,24 @@
 NEB_API_VERSION(CURRENT_NEB_API_VERSION);
 
 void *npcdmod_module_handle = NULL;
-char *redis_connect_retry_interval = "15";
+char *riemann_connect_retry_interval = "15";
 struct timeval timeout = { 1, 500000 }; // 1.5 seconds
 
-int flapjack_version = 1;
-
-/* redis target structure */
-typedef struct redistarget_struct {
+/* riemann target structure */
+typedef struct riemanntarget_struct {
     char         *host;
     int          port;
-    char         *redis_database;
-    char         *redis_queue;
-    int          redis_connection_established;
-    riemann_client_t *rediscontext;
-    struct redistarget_struct *next;
-} redistarget;
+    int          riemann_connection_established;
+    riemann_client_t *riemanncontext;
+    struct riemanntarget_struct *next;
+} riemanntarget;
 
-/* here will be all our redis targets */
-redistarget *redistargets = NULL;
+/* here will be all our riemann targets */
+riemanntarget *riemanntargets = NULL;
 
-redisReply *reply;
+riemann_message_t *r;
 
-void redis_re_connect();
+void riemann_re_connect();
 int npcdmod_handle_data(int, void *);
 
 int npcdmod_process_config_var(char *arg);
@@ -90,43 +58,34 @@ int npcdmod_process_module_args(char *args);
 char servicestate[][10] = { "OK", "WARNING", "CRITICAL", "UNKNOWN", };
 char hoststate[][12] = { "OK", "CRITICAL", "CRITICAL", };
 
-int count_escapes(const char *src);
-char *expand_escapes(const char* src);
-
-int generate_event(char *buffer, size_t buffer_size, char *host_name, char *service_name,
-                   char *state, char *output, char *long_output, char *tags,
-                   long initial_failure_delay, long repeat_failure_delay,
-                   long initial_recovery_delay, int event_time);
-
 /* this function gets called when the module is loaded by the event broker */
 int nebmodule_init(int flags, char *args, nebmodule *handle) {
     char temp_buffer[1024];
-    time_t current_time;
 
     /* save our handle */
     npcdmod_module_handle = handle;
 
     /* set some info - this is completely optional, as Nagios doesn't do anything with this data */
-    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_TITLE, "flapjackfeeder");
+    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_TITLE, "riemannfeeder");
     neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_AUTHOR, "Birger Schmidt");
-    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_COPYRIGHT, "Copyright (c) 2013-2015 Birger Schmidt");
+    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_COPYRIGHT, "Copyright (c) 2016 Birger Schmidt");
     neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_VERSION, VERSION);
     neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_LICENSE, "GPL v2");
-    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_DESC, "A simple performance data / check result extractor / redis writer.");
+    neb_set_module_info(npcdmod_module_handle, NEBMODULE_MODINFO_DESC, "A simple check result extractor / riemann writer.");
 
     /* log module info to the Nagios log file */
-    nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: Copyright (c) 2013-2016 Birger Schmidt, derived from npcdmod");
-    nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: This is version '" VERSION "' running.");
+    nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: Copyright (c) 2016 Birger Schmidt");
+    nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: This is version '" VERSION "' running.");
 
     /* process arguments */
     if (npcdmod_process_module_args(args) == ERROR) {
-        nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: An error occurred while attempting to process module arguments.");
+        nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: An error occurred while attempting to process module arguments.");
         return -1;
     }
 
-    /* connect to redis initially */
-    /* this will register for an event every 15 seconds to check (and reconnect) the redis connections */
-    redis_re_connect();
+    /* connect to riemann initially */
+    /* this will register for an event every 15 seconds to check (and reconnect) the riemann connections */
+    riemann_re_connect();
 
     /* register to be notified of certain events... */
     neb_register_callback(NEBCALLBACK_HOST_CHECK_DATA,
@@ -145,55 +104,57 @@ int nebmodule_deinit(int flags, int reason) {
     neb_deregister_callback(NEBCALLBACK_SERVICE_CHECK_DATA,npcdmod_handle_data);
 
     /* log a message to the Nagios log file */
-    nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: Deinitializing flapjackfeeder nagios event broker module.\n");
+    nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: Deinitializing riemannfeeder nagios event broker module.\n");
 
     return 0;
 }
 
 /* gets called every X seconds by an event in the scheduling queue */
-void redis_re_connect() {
-    char temp_buffer[1024];
+void riemann_re_connect() {
+    char hostname[1024];
+    time_t current_time;
 
-    redistarget *currentredistarget = redistargets;
-    while (currentredistarget != NULL) {
-        /* open redis connection to push check results if needed */
-        if (currentredistarget->rediscontext == NULL || currentredistarget->redis_connection_established == 0) {
-            nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: redis connection (%s:%d) has to be (re)established.",
-                currentredistarget->host, currentredistarget->port);
+    riemanntarget *currentriemanntarget = riemanntargets;
+    while (currentriemanntarget != NULL) {
+        /* open riemann connection to push check results if needed */
+        if (currentriemanntarget->riemanncontext == NULL || currentriemanntarget->riemann_connection_established == 0) {
+            nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann connection (%s:%d) has to be (re)established.",
+                currentriemanntarget->host, currentriemanntarget->port);
 
-            //currentredistarget->rediscontext = redisConnectWithTimeout(currentredistarget->host, atoi(currentredistarget->port), timeout);
-            currentredistarget->rediscontext = riemann_client_create(RIEMANN_CLIENT_TCP, currentredistarget->host, currentredistarget->port
+            currentriemanntarget->riemanncontext = riemann_client_create(RIEMANN_CLIENT_TCP, currentriemanntarget->host, currentriemanntarget->port
                          //,
 					     //RIEMANN_CLIENT_OPTION_TLS_CA_FILE, host->tls_ca_file,
 					     //RIEMANN_CLIENT_OPTION_TLS_CERT_FILE, host->tls_cert_file,
 					     //RIEMANN_CLIENT_OPTION_TLS_KEY_FILE, host->tls_key_file,
 					     //RIEMANN_CLIENT_OPTION_NONE
                          );
-            currentredistarget->redis_connection_established = 0;
-            //redisSetTimeout(currentredistarget->rediscontext, timeout);
-            if (riemann_client_set_timeout(currentredistarget->rediscontext, &timeout) != 0) {
-                riemann_client_free(currentredistarget->rediscontext);
-                currentredistarget->rediscontext = NULL;
-                nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: redis connection error (%s:%d), I'll retry to connect regulary.",
-                        currentredistarget->host, currentredistarget->port);
+            currentriemanntarget->riemann_connection_established = 0;
+            if (riemann_client_set_timeout(currentriemanntarget->riemanncontext, &timeout) != 0) {
+                riemann_client_free(currentriemanntarget->riemanncontext);
+                currentriemanntarget->riemanncontext = NULL;
+                nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann connection error (%s:%d), I'll retry to connect regulary.",
+                        currentriemanntarget->host, currentriemanntarget->port);
             } else {
-                currentredistarget->redis_connection_established = 1;
-                nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: redis connection (%s:%d) established.",
-                    currentredistarget->host, currentredistarget->port);
-
+                currentriemanntarget->riemann_connection_established = 1;
+                nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann connection (%s:%d) established.",
+                    currentriemanntarget->host, currentriemanntarget->port);
+                time(&current_time);
+                gethostname(hostname, 1024);
+                r = riemann_communicate_event(currentriemanntarget->riemanncontext,
+                        RIEMANN_EVENT_FIELD_HOST, hostname,
+                        RIEMANN_EVENT_FIELD_SERVICE, "riemannfeeder",
+                        RIEMANN_EVENT_FIELD_STATE, "ok",
+                        RIEMANN_EVENT_FIELD_TAGS, "naemon-client", "riemann-c-client", "riemannfeeder", NULL,
+                        RIEMANN_EVENT_FIELD_TIME, (int64_t)current_time,
+                        RIEMANN_EVENT_FIELD_NONE);
+                riemann_message_free (r);
             }
         }
-        ///*
-        else {
-            nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: redis connection (%s:%d) seems to be fine.",
-                currentredistarget->host, currentredistarget->port);
-        }
-        //*/
-        currentredistarget = currentredistarget->next;
+        currentriemanntarget = currentriemanntarget->next;
     }
 
     /* Recurring event */
-    schedule_event(atoi(redis_connect_retry_interval), redis_re_connect, NULL);
+    schedule_event(atoi(riemann_connect_retry_interval), riemann_re_connect, NULL);
 
     return;
 }
@@ -207,9 +168,6 @@ int npcdmod_handle_data(int event_type, void *data) {
     service *service=NULL;
 
     char temp_buffer[1024];
-    char push_buffer[PERFDATA_BUFFER];
-    int written;
-
 
     /* what type of event/data do we have? */
     switch (event_type) {
@@ -220,77 +178,35 @@ int npcdmod_handle_data(int event_type, void *data) {
 
             host = find_host(hostchkdata->host_name);
 
-            customvariablesmember *currentcustomvar = host->custom_variables;
-            long initial_failure_delay  = 0;
-            long repeat_failure_delay   = 0;
-            long initial_recovery_delay = 0;
-            char *cur = temp_buffer, * const end = temp_buffer + sizeof temp_buffer;
-            temp_buffer[0] = '\x0';
-            while (currentcustomvar != NULL) {
-                if (strcmp(currentcustomvar->variable_name, "TAG") == 0) {
-                  cur += snprintf(cur, end - cur,
-                      "\"%s\",",
-                      currentcustomvar->variable_value
-                      );
-                }
-                else if (strcmp(currentcustomvar->variable_name, "INITIAL_FAILURE_DELAY") == 0) {
-                      initial_failure_delay = strtol(currentcustomvar->variable_value,NULL,10);
-                }
-                else if (strcmp(currentcustomvar->variable_name, "REPEAT_FAILURE_DELAY") == 0) {
-                      repeat_failure_delay = strtol(currentcustomvar->variable_value,NULL,10);
-                }
-                else if (strcmp(currentcustomvar->variable_name, "INITIAL_RECOVERY_DELAY") == 0) {
-                      initial_recovery_delay = strtol(currentcustomvar->variable_value,NULL,10);
-                }
-                currentcustomvar = currentcustomvar->next;
-            }
-            cur--;
-            if (strcmp(cur, ",") == 0) {
-                cur[0] = '\x0';
-            }
-            else {
-                cur++;
-            }
-
-            nm_free(currentcustomvar);
-
             if (hostchkdata->type == NEBTYPE_HOSTCHECK_PROCESSED) {
 
-                int written = generate_event(push_buffer, PERFDATA_BUFFER,
-                    hostchkdata->host_name,
-                    "HOST",
-                    hoststate[hostchkdata->state],
-                    hostchkdata->output,
-                    hostchkdata->long_output,
-                    temp_buffer,
-                    initial_failure_delay,
-                    repeat_failure_delay,
-                    initial_recovery_delay,
-                    (int)hostchkdata->timestamp.tv_sec);
-
-                redistarget *currentredistarget = redistargets;
-                while (currentredistarget != NULL) {
-                    if (written >= PERFDATA_BUFFER) {
-                        nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: Buffer size of %d in npcdmod.h is too small, ignoring data for %s\n", PERFDATA_BUFFER, hostchkdata->host_name);
-                    } else if (currentredistarget->redis_connection_established) {
-                        //reply = redisCommand(currentredistarget->rediscontext,"LPUSH %s %s", currentredistarget->redis_queue, push_buffer);
-
-                        if (reply != NULL) {
-                            //freeReplyObject(reply);
-
-                        } else {
-                            nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: redis write (%s:%d) fail, lost check result (host %s - %s).",
-                                currentredistarget->host, currentredistarget->port,
+                riemanntarget *currentriemanntarget = riemanntargets;
+                while (currentriemanntarget != NULL) {
+                    if (currentriemanntarget->riemann_connection_established) {
+                        r = riemann_communicate_event(currentriemanntarget->riemanncontext,
+                                RIEMANN_EVENT_FIELD_HOST, hostchkdata->host_name,
+                                //RIEMANN_EVENT_FIELD_SERVICE, "HOST", // default -> nil
+                                RIEMANN_EVENT_FIELD_STATE, hoststate[hostchkdata->state],
+                                RIEMANN_EVENT_FIELD_TAGS, "naemon-client", "riemann-c-client", NULL,
+                                RIEMANN_EVENT_FIELD_TIME, (int64_t)hostchkdata->timestamp.tv_sec,
+                                RIEMANN_EVENT_FIELD_STRING_ATTRIBUTES,
+                                    "output", hostchkdata->output,
+                                    "long_output", hostchkdata->long_output,
+                                    NULL,
+                                RIEMANN_EVENT_FIELD_NONE);
+                        if (!r || r->error || (r->has_ok && !r->ok)) {
+                            nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann write (%s:%d) fail, lost check result (%s - %s).",
+                                currentriemanntarget->host, currentriemanntarget->port,
                                 hostchkdata->host_name, hoststate[hostchkdata->state]);
-                            currentredistarget->redis_connection_established = 0;
-                            //redisFree(currentredistarget->rediscontext);
+                            currentriemanntarget->riemann_connection_established = 0;
                         }
+                        riemann_message_free (r);
                     } else {
-                        nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: redis connection (%s:%d) fail, lost check result (host %s - %s).",
-                            currentredistarget->host, currentredistarget->port,
+                        nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann connection (%s:%d) fail, lost check result (host %s - %s).",
+                            currentriemanntarget->host, currentriemanntarget->port,
                             hostchkdata->host_name, hoststate[hostchkdata->state]);
                     }
-                    currentredistarget = currentredistarget->next;
+                    currentriemanntarget = currentriemanntarget->next;
                 }
             }
         }
@@ -305,85 +221,33 @@ int npcdmod_handle_data(int event_type, void *data) {
                 /* find the nagios service object for this service */
                 service = find_service(srvchkdata->host_name, srvchkdata->service_description);
 
-                customvariablesmember *currentcustomvar = service->custom_variables;
-                long initial_failure_delay  = 0;
-                long repeat_failure_delay   = 0;
-                long initial_recovery_delay = 0;
-                char *cur = temp_buffer, * const end = temp_buffer + sizeof temp_buffer;
-                temp_buffer[0] = '\x0';
-                while (currentcustomvar != NULL) {
-                    if (strcmp(currentcustomvar->variable_name, "TAG") == 0) {
-                      cur += snprintf(cur, end - cur,
-                          "\"%s\",",
-                          currentcustomvar->variable_value
-                          );
-                    }
-                    else if (strcmp(currentcustomvar->variable_name, "INITIAL_FAILURE_DELAY") == 0) {
-                          initial_failure_delay = strtol(currentcustomvar->variable_value,NULL,10);
-                    }
-                    else if (strcmp(currentcustomvar->variable_name, "REPEAT_FAILURE_DELAY") == 0) {
-                          repeat_failure_delay = strtol(currentcustomvar->variable_value,NULL,10);
-                    }
-                    else if (strcmp(currentcustomvar->variable_name, "INITIAL_RECOVERY_DELAY") == 0) {
-                          initial_recovery_delay = strtol(currentcustomvar->variable_value,NULL,10);
-                    }
-                    currentcustomvar = currentcustomvar->next;
-                }
-                cur--;
-                if (strcmp(cur, ",") == 0) {
-                    cur[0] = '\x0';
-                }
-                else {
-                    cur++;
-                }
-
-                nm_free(currentcustomvar);
-
-                written = generate_event(push_buffer, PERFDATA_BUFFER,
-                    srvchkdata->host_name,
-                    srvchkdata->service_description,
-                    servicestate[srvchkdata->state],
-                    srvchkdata->output,
-                    srvchkdata->long_output,
-                    temp_buffer,
-                    initial_failure_delay,
-                    repeat_failure_delay,
-                    initial_recovery_delay,
-                    (int)srvchkdata->timestamp.tv_sec);
-
-                riemann_message_t *r;
-
-                redistarget *currentredistarget = redistargets;
-                while (currentredistarget != NULL) {
-                    if (written >= PERFDATA_BUFFER) {
-                        nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: Buffer size of %d in npcdmod.h is too small, ignoring data for %s / %s\n",
-                            PERFDATA_BUFFER, srvchkdata->host_name, srvchkdata->service_description);
-                    } else if (currentredistarget->redis_connection_established) {
-                        //reply = redisCommand(currentredistarget->rediscontext,"LPUSH %s %s", currentredistarget->redis_queue, push_buffer);
-                        r = riemann_communicate_event(currentredistarget->rediscontext,
-                                RIEMANN_EVENT_FIELD_HOST, "localhost",
-                                RIEMANN_EVENT_FIELD_SERVICE, "demo-client",
-                                RIEMANN_EVENT_FIELD_STATE, "ok",
-                                RIEMANN_EVENT_FIELD_TAGS, "demo-client", "riemann-c-client", NULL,
+                riemanntarget *currentriemanntarget = riemanntargets;
+                while (currentriemanntarget != NULL) {
+                    if (currentriemanntarget->riemann_connection_established) {
+                        r = riemann_communicate_event(currentriemanntarget->riemanncontext,
+                                RIEMANN_EVENT_FIELD_HOST, srvchkdata->host_name,
+                                RIEMANN_EVENT_FIELD_SERVICE, srvchkdata->service_description,
+                                RIEMANN_EVENT_FIELD_STATE, servicestate[srvchkdata->state],
+                                RIEMANN_EVENT_FIELD_TAGS, "naemon-client", "riemann-c-client", NULL,
+                                RIEMANN_EVENT_FIELD_TIME, (int64_t)srvchkdata->timestamp.tv_sec,
+                                RIEMANN_EVENT_FIELD_STRING_ATTRIBUTES,
+                                    "output", srvchkdata->output,
+                                    "long_output", srvchkdata->long_output,
+                                    NULL,
                                 RIEMANN_EVENT_FIELD_NONE);
-                        if (r->ok != 1) {
-                            nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: redis write (%s:%d) fail, lost check result (%s : %s - %s).",
-                                currentredistarget->host, currentredistarget->port,
+                        if (!r || r->error || (r->has_ok && !r->ok)) {
+                            nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann write (%s:%d) fail, lost check result (%s : %s - %s).",
+                                currentriemanntarget->host, currentriemanntarget->port,
                                 srvchkdata->host_name, srvchkdata->service_description, servicestate[srvchkdata->state]);
-                            currentredistarget->redis_connection_established = 0;
-                            //redisFree(currentredistarget->rediscontext);
-                        } else {
-                            nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: redis write (%s:%d) SUCCESS, check result (%s : %s - %s).",
-                                currentredistarget->host, currentredistarget->port,
-                                srvchkdata->host_name, srvchkdata->service_description, servicestate[srvchkdata->state]);
+                            currentriemanntarget->riemann_connection_established = 0;
                         }
-                        //riemann_message_free (r);
+                        riemann_message_free (r);
                     } else {
-                        nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: redis connection (%s:%d) fail, lost check result (%s : %s - %s).",
-                            currentredistarget->host, currentredistarget->port,
+                        nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann connection (%s:%d) fail, lost check result (%s : %s - %s).",
+                            currentriemanntarget->host, currentriemanntarget->port,
                             srvchkdata->host_name, srvchkdata->service_description, servicestate[srvchkdata->state]);
                     }
-                    currentredistarget = currentredistarget->next;
+                    currentriemanntarget = currentriemanntarget->next;
                 }
             }
         }
@@ -409,17 +273,15 @@ int npcdmod_process_module_args(char *args) {
     int arg = 0;
 
     if (args == NULL) {
-        // fill redistarget with defaults (if parameters are missing from module config)
-        /* allocate memory for a new redis target */
-        if ((redistargets = malloc(sizeof(redistarget))) == NULL) {
-            nm_log(NSLOG_INFO_MESSAGE, "Error: Could not allocate memory for redis target\n");
+        // fill riemanntarget with defaults (if parameters are missing from module config)
+        /* allocate memory for a new riemann target */
+        if ((riemanntargets = malloc(sizeof(riemanntarget))) == NULL) {
+            nm_log(NSLOG_INFO_MESSAGE, "Error: Could not allocate memory for riemann target\n");
         }
-        redistargets->host = "127.0.0.1";
-        redistargets->port = 6379;
-        redistargets->redis_database = "0";
-        redistargets->redis_queue = "events";
-        redistargets->redis_connection_established = 0;
-    	redistargets->next = NULL;
+        riemanntargets->host = "127.0.0.1";
+        riemanntargets->port = 5555;
+        riemanntargets->riemann_connection_established = 0;
+    	riemanntargets->next = NULL;
         return OK;
     }
 
@@ -464,9 +326,9 @@ int npcdmod_process_module_args(char *args) {
         }
     }
 
-    if (redistargets == NULL || redistargets->host == NULL //|| redistargets->port == NULL ||
+    if (riemanntargets == NULL || riemanntargets->host == NULL //|| riemanntargets->port == NULL ||
         ) {
-        nm_log(NSLOG_CONFIG_ERROR, "flapjackfeeder: Error: You have to configure at least one redis target tuple (i.e. redis_host=localhost,redis_port=6379,redis_database=0,redis_queue=events)");
+        nm_log(NSLOG_CONFIG_ERROR, "riemannfeeder: Error: You have to configure at least one riemann target tuple (i.e. riemann_host=localhost,riemann_port=5555)");
         return ERROR;
     }
 
@@ -496,254 +358,74 @@ int npcdmod_process_config_var(char *arg) {
     strip(var);
     strip(val);
 
-	redistarget *new_redistarget = NULL;
+	riemanntarget *new_riemanntarget = NULL;
 
     /* process the variable... */
-    if (!strcmp(var, "redis_host")) {
-        // fill redistarget structure
-        if (redistargets == NULL || redistargets->host != NULL) {
-            /* allocate memory for a new redis target */
-            if ((new_redistarget = malloc(sizeof(redistarget))) == NULL) {
-                nm_log(NSLOG_INFO_MESSAGE, "Error: Could not allocate memory for redis target\n");
+    if (!strcmp(var, "riemann_host")) {
+        // fill riemanntarget structure
+        if (riemanntargets == NULL || riemanntargets->host != NULL) {
+            /* allocate memory for a new riemann target */
+            if ((new_riemanntarget = malloc(sizeof(riemanntarget))) == NULL) {
+                nm_log(NSLOG_INFO_MESSAGE, "Error: Could not allocate memory for riemann target\n");
             }
-            new_redistarget->host = NULL;
-            new_redistarget->port = 0;
-            new_redistarget->redis_database = NULL;
-            new_redistarget->redis_queue = NULL;
-            new_redistarget->rediscontext = NULL;
-            new_redistarget->redis_connection_established = 0;
+            new_riemanntarget->host = NULL;
+            new_riemanntarget->port = 0;
+            new_riemanntarget->riemanncontext = NULL;
+            new_riemanntarget->riemann_connection_established = 0;
         }
-        if (redistargets != NULL && redistargets->host == NULL) {
-            redistargets->host = strdup(val);
+        if (riemanntargets != NULL && riemanntargets->host == NULL) {
+            riemanntargets->host = strdup(val);
         }
         else {
-            new_redistarget->host = strdup(val);
+            new_riemanntarget->host = strdup(val);
         }
-        if (new_redistarget != NULL) {
-        	/* add the new redistarget to the head of the redistarget list */
-        	new_redistarget->next = redistargets;
-        	redistargets = new_redistarget;
+        if (new_riemanntarget != NULL) {
+        	/* add the new riemanntarget to the head of the riemanntarget list */
+        	new_riemanntarget->next = riemanntargets;
+        	riemanntargets = new_riemanntarget;
         }
     }
 
-    else if (!strcmp(var, "redis_port")) {
-        // fill redistarget structure
-        if (redistargets == NULL || redistargets->port != 0) {
-            /* allocate memory for a new redis target */
-            if ((new_redistarget = malloc(sizeof(redistarget))) == NULL) {
-                nm_log(NSLOG_INFO_MESSAGE, "Error: Could not allocate memory for redis target");
+    else if (!strcmp(var, "riemann_port")) {
+        // fill riemanntarget structure
+        if (riemanntargets == NULL || riemanntargets->port != 0) {
+            /* allocate memory for a new riemann target */
+            if ((new_riemanntarget = malloc(sizeof(riemanntarget))) == NULL) {
+                nm_log(NSLOG_INFO_MESSAGE, "Error: Could not allocate memory for riemann target");
             }
-            new_redistarget->host = NULL;
-            new_redistarget->port = 5555;
-            new_redistarget->redis_database = NULL;
-            new_redistarget->redis_queue = NULL;
-            new_redistarget->rediscontext = NULL;
-            new_redistarget->redis_connection_established = 0;
+            new_riemanntarget->host = NULL;
+            new_riemanntarget->port = 0;
+            new_riemanntarget->riemanncontext = NULL;
+            new_riemanntarget->riemann_connection_established = 0;
         }
-        if (redistargets != NULL && redistargets->port == 0) {
-            redistargets->port = atoi(val);
+        if (riemanntargets != NULL && riemanntargets->port == 0) {
+            riemanntargets->port = atoi(val);
         }
         else {
-            new_redistarget->port = atoi(val);
+            new_riemanntarget->port = atoi(val);
         }
-        if (new_redistarget != NULL) {
-        	/* add the new redistarget to the head of the redistarget list */
-        	new_redistarget->next = redistargets;
-        	redistargets = new_redistarget;
+        if (new_riemanntarget != NULL) {
+        	/* add the new riemanntarget to the head of the riemanntarget list */
+        	new_riemanntarget->next = riemanntargets;
+        	riemanntargets = new_riemanntarget;
         }
     }
 
-    else if (!strcmp(var, "redis_database")) {
-        // fill redistarget structure
-        if (redistargets == NULL || redistargets->redis_database != NULL) {
-            /* allocate memory for a new redis target */
-            if ((new_redistarget = malloc(sizeof(redistarget))) == NULL) {
-                nm_log(NSLOG_INFO_MESSAGE, "Error: Could not allocate memory for redis target");
-            }
-            new_redistarget->host = NULL;
-            new_redistarget->port = 0;
-            new_redistarget->redis_database = NULL;
-            new_redistarget->redis_queue = NULL;
-            new_redistarget->rediscontext = NULL;
-            new_redistarget->redis_connection_established = 0;
-        }
-        if (redistargets != NULL && redistargets->redis_database == NULL) {
-            redistargets->redis_database = strdup(val);
-        }
-        else {
-            new_redistarget->redis_database = strdup(val);
-        }
-        if (new_redistarget != NULL) {
-            /* add the new redistarget to the head of the redistarget list */
-            new_redistarget->next = redistargets;
-            redistargets = new_redistarget;
-        }
-    }
-
-    else if (!strcmp(var, "redis_queue")) {
-        // fill redistarget structure
-        if (redistargets == NULL || redistargets->redis_queue != NULL) {
-            /* allocate memory for a new redis target */
-            if ((new_redistarget = malloc(sizeof(redistarget))) == NULL) {
-                nm_log(NSLOG_INFO_MESSAGE, "Error: Could not allocate memory for redis target\n");
-            }
-            new_redistarget->host = NULL;
-            new_redistarget->port = 0;
-            new_redistarget->redis_database = NULL;
-            new_redistarget->redis_queue = NULL;
-            new_redistarget->rediscontext = NULL;
-            new_redistarget->redis_connection_established = 0;
-        }
-        if (redistargets != NULL && redistargets->redis_queue == NULL) {
-            redistargets->redis_queue = strdup(val);
-        }
-        else {
-            new_redistarget->redis_queue = strdup(val);
-        }
-        if (new_redistarget != NULL) {
-            /* add the new redistarget to the head of the redistarget list */
-            new_redistarget->next = redistargets;
-            redistargets = new_redistarget;
-        }
-    }
-
-    else if (!strcmp(var, "redis_connect_retry_interval")) {
-        redis_connect_retry_interval = strdup(val);
-        nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: configure %ss as retry interval for redis reconnects.", redis_connect_retry_interval);
+    else if (!strcmp(var, "riemann_connect_retry_interval")) {
+        riemann_connect_retry_interval = strdup(val);
+        nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: configure %ss as retry interval for riemann reconnects.", riemann_connect_retry_interval);
     }
 
     else if (!strcmp(var, "timeout")) {
         timeout.tv_sec = atoi(val);
         timeout.tv_usec = 0;
-        nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: configure %ss as timeout for redis connects/writes.", val);
-    }
-
-    else if (!strcmp(var, "flapjack_version")) {
-        flapjack_version = atoi(val);
-        nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: configure %s as flapjack_version.", val);
+        nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: configure %ss as timeout for riemann connects/writes.", val);
     }
 
     else {
-        nm_log(NSLOG_INFO_MESSAGE, "flapjackfeeder: I don't know what to do with '%s' as argument.", var);
+        nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: I don't know what to do with '%s' as argument.", var);
         return ERROR;
     }
 
     return OK;
-}
-
-/* Counts escape sequences within a string
-
-   Used for calculating the size of the destination string for
-   expand_escapes, below.
-*/
-int count_escapes(const char *src) {
-    int e = 0;
-
-    char c = *(src++);
-
-    while (c) {
-        switch(c) {
-            case '\\':
-                e++;
-                break;
-            case '\"':
-                e++;
-                break;
-        }
-        c = *(src++);
-    }
-
-    return(e);
-}
-
-/* Expands escape sequences within a string
- *
- * src must be a string with a NUL terminator
- *
- * NUL characters are not expanded to \0 (otherwise how would we know when
- * the input string ends?)
- *
- * Adapted from http://stackoverflow.com/questions/3535023/convert-characters-in-a-c-string-to-their-escape-sequences
- */
-char *expand_escapes(const char* src)
-{
-    char* dest;
-    char* d;
-
-    if ((src == NULL) || ( strlen(src) == 0)) {
-        dest = malloc(sizeof(char));
-        d = dest;
-    } else {
-        // escaped lengths must take NUL terminator into account
-        int dest_len = strlen(src) + count_escapes(src) + 1;
-        dest = malloc(dest_len * sizeof(char));
-        d = dest;
-
-        char c = *(src++);
-
-        while (c) {
-            switch(c) {
-                case '\\':
-                    *(d++) = '\\';
-                    *(d++) = '\\';
-                    break;
-                case '\"':
-                    *(d++) = '\\';
-                    *(d++) = '\"';
-                    break;
-                default:
-                    *(d++) = c;
-            }
-            c = *(src++);
-        }
-    }
-
-    *d = '\0'; /* Ensure NUL terminator */
-
-    return(dest);
-}
-
-int generate_event(char *buffer, size_t buffer_size, char *host_name, char *service_name,
-                   char *state, char *output, char *long_output, char *tags,
-                   long initial_failure_delay, long repeat_failure_delay,
-                   long initial_recovery_delay, int event_time) {
-
-    char *escaped_host_name    = expand_escapes(host_name);
-    char *escaped_service_name = expand_escapes(service_name);
-    char *escaped_state        = expand_escapes(state);
-    char *escaped_output       = expand_escapes(output);
-    char *escaped_long_output  = expand_escapes(long_output);
-
-    int written = snprintf(buffer, buffer_size,
-                            "{"
-                                "\"entity\":\"%s\","                   // HOSTNAME
-                                "\"check\":\"%s\","                    // SERVICENAME
-                                "\"type\":\"service\","                // type
-                                "\"state\":\"%s\","                    // HOSTSTATE
-                                "\"summary\":\"%s\","                  // HOSTOUTPUT
-                                "\"details\":\"%s\","                  // HOSTlongoutput
-                                "\"tags\":[%s],"                       // tags
-                                "\"initial_failure_delay\":%lu,"       // initial_failure_delay
-                                "\"repeat_failure_delay\":%lu,"        // repeat_failure_delay
-                                "\"initial_recovery_delay\":%lu,"      // initial_recovery_delay
-                                "\"time\":%d"                          // TIMET
-                            "}",
-                                escaped_host_name,
-                                escaped_service_name,
-                                escaped_state,
-                                escaped_output,
-                                escaped_long_output,
-                                tags,
-                                initial_failure_delay,
-                                repeat_failure_delay,
-                                initial_recovery_delay,
-                                event_time);
-
-    nm_free(escaped_host_name);
-    nm_free(escaped_service_name);
-    nm_free(escaped_state);
-    nm_free(escaped_output);
-    nm_free(escaped_long_output);
-
-    return(written);
 }
