@@ -195,16 +195,16 @@ int riemannfeeder_handle_data(int event_type, void *data) {
                                     NULL,
                                 RIEMANN_EVENT_FIELD_NONE);
                         if (!r || r->error || (r->has_ok && !r->ok)) {
-                            nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann write (%s:%d) fail, lost check result (%s - %s).",
-                                currentriemanntarget->host, currentriemanntarget->port,
-                                hostchkdata->host_name, hoststate[hostchkdata->state]);
+//                            nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann write (%s:%d) fail, lost check result (%s - %s).",
+//                                currentriemanntarget->host, currentriemanntarget->port,
+//                                hostchkdata->host_name, hoststate[hostchkdata->state]);
                             currentriemanntarget->riemann_connection_established = 0;
                         }
                         riemann_message_free (r);
-                    } else {
-                        nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann connection (%s:%d) fail, lost check result (host %s - %s).",
-                            currentriemanntarget->host, currentriemanntarget->port,
-                            hostchkdata->host_name, hoststate[hostchkdata->state]);
+//                    } else {
+//                        nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann connection (%s:%d) fail, lost check result (host %s - %s).",
+//                            currentriemanntarget->host, currentriemanntarget->port,
+//                            hostchkdata->host_name, hoststate[hostchkdata->state]);
                     }
                     currentriemanntarget = currentriemanntarget->next;
                 }
@@ -236,16 +236,16 @@ int riemannfeeder_handle_data(int event_type, void *data) {
                                     NULL,
                                 RIEMANN_EVENT_FIELD_NONE);
                         if (!r || r->error || (r->has_ok && !r->ok)) {
-                            nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann write (%s:%d) fail, lost check result (%s : %s - %s).",
-                                currentriemanntarget->host, currentriemanntarget->port,
-                                srvchkdata->host_name, srvchkdata->service_description, servicestate[srvchkdata->state]);
+//                            nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann write (%s:%d) fail, lost check result (%s : %s - %s).",
+//                                currentriemanntarget->host, currentriemanntarget->port,
+//                                srvchkdata->host_name, srvchkdata->service_description, servicestate[srvchkdata->state]);
                             currentriemanntarget->riemann_connection_established = 0;
                         }
                         riemann_message_free (r);
-                    } else {
-                        nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann connection (%s:%d) fail, lost check result (%s : %s - %s).",
-                            currentriemanntarget->host, currentriemanntarget->port,
-                            srvchkdata->host_name, srvchkdata->service_description, servicestate[srvchkdata->state]);
+//                    } else {
+//                        nm_log(NSLOG_INFO_MESSAGE, "riemannfeeder: riemann connection (%s:%d) fail, lost check result (%s : %s - %s).",
+//                            currentriemanntarget->host, currentriemanntarget->port,
+//                            srvchkdata->host_name, srvchkdata->service_description, servicestate[srvchkdata->state]);
                     }
                     currentriemanntarget = currentriemanntarget->next;
                 }
