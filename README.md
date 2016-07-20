@@ -55,6 +55,6 @@ Besides the **riemann_host**, **riemann_port** options, which can be given multi
 
 - **timeout** in seconds (defaults to 1,5 seconds, but you can only specify an integer here)
 
-  *Warning: this will block nagios for the time it is waiting on riemann not only once but every $riemann_connect_retry_interval seconds!*
+  *Warning: this will block Naemon for the time it is waiting on riemann not only once but every $riemann_connect_retry_interval seconds!*
 
 - **riemann_connect_retry_interval** in seconds (defaults to 15 seconds)
