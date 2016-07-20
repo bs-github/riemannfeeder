@@ -1,0 +1,51 @@
+diff --git a/Makefile.am b/Makefile.am
+index 540050a..8202c6c 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -20,9 +20,11 @@ lib_LTLIBRARIES			= lib/libriemann-client.la
+ lib_libriemann_client_la_CFLAGS	= ${AM_CFLAGS} ${PROTOBUF_C_CFLAGS} \
+ 				  ${GNUTLS_CFLAGS}
+ lib_libriemann_client_la_LDFLAGS= \
++	-fPIC -static \
+ 	${PROTOBUF_C_LIBS}	  \
+ 	${GNUTLS_LIBS}		  \
+-	-version-info ${LRC_CURRENT}:${LRC_REVISION}:${LRC_AGE}
++	-version-info ${LRC_CURRENT}:${LRC_REVISION}:${LRC_AGE} \
++	-Wl
+ proto_files			= \
+ 	lib/riemann/proto/riemann.pb-c.c  \
+ 	lib/riemann/proto/riemann.pb-c.h
+@@ -62,11 +64,11 @@ ${proto_files}: ${top_srcdir}/lib/riemann/proto/riemann.proto
+ 	${AM_V_at} ${mkinstalldirs} ${top_builddir}/lib/riemann/proto
+ 	${AM_V_GEN} protoc-c $^ -I${top_srcdir}/lib/riemann/proto --c_out=${top_builddir}/lib/riemann/proto
+ 
+-if HAVE_VERSIONING
+-lib_libriemann_client_la_LDFLAGS += \
+-	-Wl,--version-script,$(top_srcdir)/lib/riemann/libriemann.ver
+-lib_libriemann_client_la_DEPENDENCIES	= ${top_srcdir}/lib/riemann/libriemann.ver
+-endif
++#if HAVE_VERSIONING
++#lib_libriemann_client_la_LDFLAGS += \
++#	-Wl,--version-script,$(top_srcdir)/lib/riemann/libriemann.ver
++#lib_libriemann_client_la_DEPENDENCIES	= ${top_srcdir}/lib/riemann/libriemann.ver
++#endif
+ 
+ pkgconfigdir			= $(libdir)/pkgconfig
+ pkgconfig_DATA			= lib/riemann/riemann-client.pc
+diff --git a/configure.ac b/configure.ac
+index 027de6f..a1b6a6a 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -98,9 +98,9 @@ AC_CACHE_CHECK(whether $LD supports symbol version scripts,
+                 [ac_cv_prog_ld_version_script=yes], [])
+         ])
+ LDFLAGS=$ac_save_LDFLAGS
+-AM_CONDITIONAL([HAVE_VERSIONING], [test x$ac_cv_prog_ld_version_script = xyes])
+-AC_DEFINE_UNQUOTED(HAVE_VERSIONING, `enable_value ${ac_cv_prog_ld_version_script}`,
+-                   [Define to 1 if symbol versioning is enabled])
++#AM_CONDITIONAL([HAVE_VERSIONING], [test x$ac_cv_prog_ld_version_script = xyes])
++#AC_DEFINE_UNQUOTED(HAVE_VERSIONING, `enable_value ${ac_cv_prog_ld_version_script}`,
++#                   [Define to 1 if symbol versioning is enabled])
+ 
+ AM_CONDITIONAL([HAVE_JSON_C], [test x$HAVE_JSON_C != xno])
+ AM_CONDITIONAL([HAVE_CHECK], [test x$HAVE_CHECK != xno])

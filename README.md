@@ -1,15 +1,10 @@
-flapjackfeeder
+riemannfeeder
 ==============
 
-Nagios/Icinga event broker module (NEB) to feed check execution results to the events queue in Flapjack, via Redis.
+Naemon event broker module (NEB) to feed check execution results as events into Riemann.
 
-Known to work on Linux (eg Ubuntu Precise) with:
-- Nagios 3.2.3
-- Nagios 4
-- Naemon 4
-- Icinga 1.x
-
-Icinga 2.x drops compatibility with NEB modules, but if you're running a recent version (2.4+) with the API enabled, you can use the [flapjack-icinga2](https://github.com/sol1/flapjack-icinga2) API client as an event relay.
+Known to work on Linux (eg Ubuntu 14.04 LTS) with:
+- Naemon 1.0.5
 
 ## versioning
 
@@ -19,46 +14,47 @@ Add a tag into git; that tag will become the version number during compile time 
 ## compiling
 
 First clone the git repo to get the source.
-Then run make to compile.
-This will fetch and compile the only dependency (hiredis) for you as well.
-
 ``` bash
-vagrant@flapjack:$ cd /vagrant
-vagrant@flapjack:/vagrant$ git clone https://github.com/flapjack/flapjackfeeder.git
-vagrant@flapjack:/vagrant$ cd flapjackfeeder
-vagrant@flapjack:/vagrant/flapjackfeeder$ make
+$ git clone https://github.com/bs-github/riemannfeeder.git
+$ cd riemannfeeder
 ```
+Install the following packages as root (especially naemon-dev from the consol labs repo https://labs.consol.de/repo/stable/):
+``` bash
+$ sudo aptitude install build-essential gcc bison autoconf automake flex libltdl-dev pkg-config libgtk2.0-dev naemon-dev
+```
+Then run make to compile.
+``` bash
+$ make
+```
+This will fetch and compile the dependencies for you as well.
 
 If you build following the steps in this README, you get something like this:
 ```
-vagrant@flapjack:/vagrant/flapjackfeeder$ ls -l *.o
--rwxr-xr-x 1 vagrant vagrant 56240 Jun 24 18:00 flapjackfeeder3-v0.0.5.o
--rwxr-xr-x 1 vagrant vagrant 56240 Jun 24 18:01 flapjackfeeder4-v0.0.5.o
+$ ls -l *.o
+lrwxr-xr-x 1 vagrant vagrant    44 Jul 20 05:35 riemannfeeder-latest.o -> riemannfeeder-v0.0.6-beta-6-ga1a41d8-dirty.o
+-rwxr-xr-x 1 vagrant vagrant 81416 Jul 20 05:35 riemannfeeder-v0.0.6-beta-6-ga1a41d8-dirty.o
 ```
-Those are the two versions of the module built for Nagios3 and Nagios4/Naemon4.
+Linked is the latest version of the module built for Naemon.
 
 ## usage
 
-Configure Nagios/Icinga to load the neb module in *nagios.cfg* by adding the following line.
-Alter the redis host, port, database number and queue according to your needs.
+Configure Naemon to load the neb module in *naemon.cfg* by adding the following line.
+Alter the riemann host, and port according to your needs.
 ``` cfg
-broker_module=/tmp/flapjackfeeder.o redis_host=localhost,redis_port=6379,redis_database=0,redis_queue=events,timeout=5
+broker_module=/tmp/riemannfeeder.o riemann_host=localhost,riemann_port=5555,timeout=1
 ```
 
 You can feed multiple target databases by specifying them on the module load line.
 ```
-broker_module=/tmp/flapjackfeeder.o redis_host=localhost,redis_port=6379,redis_database=0,redis_queue=events,redis_host=127.0.0.1,redis_port=6380,redis_database=1,redis_queue=flapjack_events
+broker_module=/tmp/riemannfeeder.o riemann_host=localhost,riemann_port=5555,riemann_host=remotehost,riemann_port=5555
 ```
 
 ## options
 
-Besides the **redis_host**, **redis_port**, **redis_database** and **redis_queue** options, which can be given multiple times to provide data to more than one redis database, there are more options that you can set.
+Besides the **riemann_host**, **riemann_port** options, which can be given multiple times to provide data to more than one riemann instance, there are more options that you can set.
 
 - **timeout** in seconds (defaults to 1,5 seconds, but you can only specify an integer here)
 
-  *Warning: this will block nagios for the time it is waiting on redis not only once but every $redis_connect_retry_interval seconds!*
+  *Warning: this will block nagios for the time it is waiting on riemann not only once but every $riemann_connect_retry_interval seconds!*
 
-- **redis_connect_retry_interval** in seconds (defaults to 15 seconds)
-
-- **flapjack_version** (integer) if > 1, then it will create the extra object on the 'events_actions' queue required for safely interruptible event processing Flapjack v2+.
-
+- **riemann_connect_retry_interval** in seconds (defaults to 15 seconds)
